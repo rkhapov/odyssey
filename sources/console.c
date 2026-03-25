@@ -50,6 +50,7 @@ typedef enum {
 	OD_LFRONTEND,
 	OD_LROUTER,
 	OD_LVERSION,
+	OD_LVERSION_EXTENDED,
 	OD_LLISTEN,
 	OD_LSTORAGES,
 	OD_LFDS,
@@ -82,6 +83,7 @@ static od_keyword_t od_console_keywords[] = {
 	od_keyword("router", OD_LROUTER),
 	od_keyword("drop", OD_LDROP),
 	od_keyword("version", OD_LVERSION),
+	od_keyword("version_extended", OD_LVERSION_EXTENDED),
 	od_keyword("listen", OD_LLISTEN),
 	od_keyword("storages", OD_LSTORAGES),
 	od_keyword("fds", OD_LFDS),
@@ -576,6 +578,72 @@ static inline int od_console_show_version(machine_msg_t *stream)
 #endif
 
 	int rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	rc = kiwi_be_write_complete(stream, "SHOW", 5);
+	return rc;
+}
+
+static inline int od_console_show_version_extended(machine_msg_t *stream)
+{
+	assert(stream);
+
+	if (kiwi_be_write_row_descriptionf(
+		    stream, "sssss", "version", "build_type", "compiler",
+		    "compiler_version", "arch") == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+
+	int offset;
+	if (kiwi_be_write_data_row(stream, &offset) == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+
+	int rc;
+
+	/* version (with git hash if available) */
+#ifdef ODYSSEY_VERSION_GIT
+	char version_str[64];
+	int version_len =
+		od_snprintf(version_str, sizeof(version_str), "%s-%s",
+			    ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT);
+	rc = kiwi_be_write_data_row_add(stream, offset, version_str,
+					version_len);
+#else
+	rc = kiwi_be_write_data_row_add(stream, offset, ODYSSEY_VERSION_NUMBER,
+					strlen(ODYSSEY_VERSION_NUMBER));
+#endif
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* build_type */
+	rc = kiwi_be_write_data_row_add(stream, offset, ODYSSEY_BUILD_TYPE,
+					strlen(ODYSSEY_BUILD_TYPE));
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* compiler */
+	rc = kiwi_be_write_data_row_add(stream, offset, ODYSSEY_COMPILER_NAME,
+					strlen(ODYSSEY_COMPILER_NAME));
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* compiler_version */
+	rc = kiwi_be_write_data_row_add(stream, offset,
+					ODYSSEY_COMPILER_VERSION,
+					strlen(ODYSSEY_COMPILER_VERSION));
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* arch */
+	rc = kiwi_be_write_data_row_add(stream, offset, ODYSSEY_BUILD_ARCH,
+					strlen(ODYSSEY_BUILD_ARCH));
 	if (rc != OK_RESPONSE) {
 		return rc;
 	}
@@ -2205,6 +2273,8 @@ static inline int od_console_show(od_client_t *client, machine_msg_t *stream,
 		return od_console_show_errors_per_route(client, stream);
 	case OD_LVERSION:
 		return od_console_show_version(stream);
+	case OD_LVERSION_EXTENDED:
+		return od_console_show_version_extended(stream);
 	case OD_LLISTEN:
 		return od_console_show_listen(client, stream);
 	case OD_LSTORAGES:

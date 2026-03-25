@@ -25,25 +25,26 @@ import (
 )
 
 const (
-	namespace                 = "odyssey"
-	metricsHandlePath         = "/metrics"
-	showVersionCommand        = "show version;"
-	showListsCommand          = "show lists;"
-	showIsPausedCommand       = "show is_paused;"
-	showErrorsCommand         = "show errors;"
-	showStatsCommand          = "show stats;"
-	showDatabasesCommand      = "show databases;"
-	showPoolsExtendedCommand  = "show pools_extended;"
-	poolModeColumnName        = "pool_mode"
-	queryQuantilePrefix       = "query_"
-	transactionQuantilePrefix = "transaction_"
+	namespace                  = "odyssey"
+	metricsHandlePath          = "/metrics"
+	showVersionCommand         = "show version;"
+	showVersionExtendedCommand = "show version_extended;"
+	showListsCommand           = "show lists;"
+	showIsPausedCommand        = "show is_paused;"
+	showErrorsCommand          = "show errors;"
+	showStatsCommand           = "show stats;"
+	showDatabasesCommand       = "show databases;"
+	showPoolsExtendedCommand   = "show pools_extended;"
+	poolModeColumnName         = "pool_mode"
+	queryQuantilePrefix        = "query_"
+	transactionQuantilePrefix  = "transaction_"
 )
 
 var (
 	versionDescription = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "version", "info"),
 		"The Odyssey version info",
-		[]string{"version"}, nil,
+		[]string{"version", "build_type", "compiler", "compiler_version", "arch"}, nil,
 	)
 
 	exporterUpDescription = prometheus.NewDesc(
@@ -548,10 +549,12 @@ func (exporter *Exporter) collectRoutePoolCapacities(ctx context.Context, db *sq
 	return result, nil
 }
 
-func (*Exporter) sendVersionMetric(ctx context.Context, ch chan<- prometheus.Metric, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, showVersionCommand)
+func (exporter *Exporter) sendVersionMetric(ctx context.Context, ch chan<- prometheus.Metric, db *sql.DB) error {
+	// Try version_extended first for full build info, fall back to plain version
+	// for backward compatibility with older Odyssey instances.
+	rows, err := db.QueryContext(ctx, showVersionExtendedCommand)
 	if err != nil {
-		return fmt.Errorf("error getting version: %w", err)
+		return exporter.sendVersionMetricFallback(ctx, ch, db, err)
 	}
 	defer rows.Close()
 
@@ -561,15 +564,47 @@ func (*Exporter) sendVersionMetric(ctx context.Context, ch chan<- prometheus.Met
 		return fmt.Errorf("can't get columns for version: %w", err)
 	}
 
-	if len(columnNames) != 1 || columnNames[0] != "version" {
-		return fmt.Errorf("unexpected version command output format")
+	if !rows.Next() {
+		return fmt.Errorf("empty version_extended command output")
 	}
 
-	var odysseyVersion string
+	if len(columnNames) == 5 {
+		var version, buildType, compiler, compilerVersion, arch string
+		err = rows.Scan(&version, &buildType, &compiler, &compilerVersion, &arch)
+		if err != nil {
+			return fmt.Errorf("can't scan version_extended columns: %w", err)
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			versionDescription,
+			prometheus.GaugeValue,
+			1.0,
+			version, buildType, compiler, compilerVersion, arch,
+		)
+		return nil
+	}
+
+	// Unexpected column count — try fallback
+	rows.Close()
+	return exporter.sendVersionMetricFallback(ctx, ch, db, nil)
+}
+
+func (exporter *Exporter) sendVersionMetricFallback(ctx context.Context, ch chan<- prometheus.Metric, db *sql.DB, prevErr error) error {
+	rows, err := db.QueryContext(ctx, showVersionCommand)
+	if err != nil {
+		if prevErr != nil {
+			return fmt.Errorf("error getting version (extended: %v, fallback: %w)", prevErr, err)
+		}
+		return fmt.Errorf("error getting version: %w", err)
+	}
+	defer rows.Close()
+
 	if !rows.Next() {
 		return fmt.Errorf("empty version command output")
 	}
-	err = rows.Scan(&odysseyVersion)
+
+	var version string
+	err = rows.Scan(&version)
 	if err != nil {
 		return fmt.Errorf("can't scan version column: %w", err)
 	}
@@ -578,7 +613,7 @@ func (*Exporter) sendVersionMetric(ctx context.Context, ch chan<- prometheus.Met
 		versionDescription,
 		prometheus.GaugeValue,
 		1.0,
-		odysseyVersion,
+		version, "", "", "", "",
 	)
 
 	return nil
