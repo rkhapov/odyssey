@@ -215,6 +215,9 @@ replication_test: build_images
 jdbc_test: build_images
 	docker compose -f ./test/drivers/jdbc/docker-compose.yml up --exit-code-from regress_test --build --remove-orphans --force-recreate
 
+userver_test: build_images
+	docker compose -f ./test/drivers/userver/docker-compose.yml up --build --abort-on-container-exit --exit-code-from userver_test --remove-orphans # --force-recreate
+
 ci-unittests:
 	docker build \
 		--platform $(ODYSSEY_TEST_TARGET_PLATFORM) \
