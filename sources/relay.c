@@ -563,16 +563,18 @@ static od_frontend_status_t execute_xbuf(od_relay_t *relay, machine_msg_t *msg,
 	}
 
 	if (xbuf_append(&relay->xbuf, msg)) {
-		return OD_EOOM;
+		status = OD_EOOM;
+		goto to_return;
 	}
 
 	status = od_xplan_make_from_xbuf(&relay->xplan, relay);
 	if (status != OD_OK) {
-		return status;
+		goto to_return;
 	}
 
 	status = od_xplan_run(&relay->xplan, relay, timeout_ms);
 
+to_return:
 	/* never reuse this ones */
 	xbuf_clear(&relay->xbuf);
 	od_xplan_clear(&relay->xplan);
