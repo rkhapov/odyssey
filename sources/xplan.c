@@ -1097,7 +1097,10 @@ static od_frontend_status_t run_forward(od_xplan_entry_t *forward,
 		"main", server, 1 /* one complete for 1 forward */, timeout_ms);
 
 	if (status == OD_COPY_IN_RECEIVED) {
-		status = od_stream_copy_to_server("main", client, server,
+		machine_msg_t *add =
+			od_relay_get_copy_additional(&client->relay);
+
+		status = od_stream_copy_to_server("main", client, server, add,
 						  timeout_ms);
 		if (status == OD_OK) {
 			status = OD_COPY_IN_RECEIVED;

@@ -27,6 +27,7 @@ void mm_vector_init(mm_vector_t *vec, size_t elsize,
 		    mm_vector_element_dtor_fn eldtor);
 void mm_vector_destroy(mm_vector_t *vec);
 size_t mm_vector_size(const mm_vector_t *vec);
+int mm_vector_empty(const mm_vector_t *vec);
 void mm_vector_clear(mm_vector_t *vec);
 void *mm_vector_get(mm_vector_t *vec, size_t idx);
 void *mm_vector_back(mm_vector_t *vec);

@@ -1418,6 +1418,7 @@ static od_frontend_status_t client_process_message_full(od_client_t *client,
 	od_instance_t *instance = client->global->instance;
 	od_route_t *route = client->route;
 	od_server_t *server = client->server;
+	machine_msg_t *xflush = NULL;
 	assert(route != NULL);
 
 	char *data = machine_msg_data(msg);
@@ -1515,13 +1516,41 @@ static od_frontend_status_t client_process_message_full(od_client_t *client,
 	case KIWI_FE_COPY_FAIL:
 	case KIWI_FE_COPY_DATA:
 		/*
-		 * copy are handled inside process query
-		 * but after receiving the error on copy, client might
-		 * send some copy messages, that must be just dropped
+		 * normally copy is initiated from some query, executed
+		 * by Query or Execute
 		 *
-		 * so do nothing
+		 * in first case, the Copy subprotocol messages will be
+		 * handled inside od_relay_process_query, so lets think
+		 * this is impossible situation
+		 *
+		 * in second case, we need to start copy explicitly
+		 * so lets add Flush message,
+		 * all other work will be done by relay
 		 */
-		status = OD_OK;
+
+		if (mm_vector_empty(&client->relay.xbuf.msgs)) {
+			od_gerror(
+				"main", client, server,
+				"unexpected message type '%c' for client not in xproto mode",
+				type);
+			status = OD_ECLIENT_PROTOCOL_ERROR;
+			break;
+		}
+
+		xflush = kiwi_fe_write_flush(NULL);
+		if (xflush == NULL) {
+			status = OD_EOOM;
+			break;
+		}
+
+		/* ler the copy stream to handle this message */
+		od_relay_set_copy_additional(&client->relay, msg);
+
+		status = od_relay_process_xflush(&client->relay, xflush,
+						 timeout_ms);
+
+		od_relay_set_copy_additional(&client->relay, NULL);
+		machine_msg_free(xflush);
 
 		break;
 

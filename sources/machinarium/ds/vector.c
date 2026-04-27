@@ -32,6 +32,11 @@ size_t mm_vector_size(const mm_vector_t *vec)
 	return vec->size;
 }
 
+int mm_vector_empty(const mm_vector_t *vec)
+{
+	return vec->size == 0;
+}
+
 static inline void *get_impl(mm_vector_t *vec, size_t idx)
 {
 	return &vec->elements[idx * vec->elsize];
