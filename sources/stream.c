@@ -803,8 +803,10 @@ copy_process_readahead(char *ctx, copy_stream_t *stream, od_client_t *client,
 	return status;
 }
 
-static od_frontend_status_t
-stream_copy_from_client(char *ctx, od_client_t *client, uint32_t timeout_ms)
+static od_frontend_status_t stream_copy_from_client(char *ctx,
+						    od_client_t *client,
+						    machine_msg_t *additional,
+						    uint32_t timeout_ms)
 {
 	od_frontend_status_t status = OD_OK;
 	int rc;
@@ -820,6 +822,22 @@ stream_copy_from_client(char *ctx, od_client_t *client, uint32_t timeout_ms)
 	 * this is done for disconnection/errors of server detection
 	 */
 	od_io_set_peer(&client->io, &server->io);
+
+	if (additional) {
+		kiwi_header_t *hdr =
+			(kiwi_header_t *)machine_msg_data(additional);
+		kiwi_fe_type_t type = hdr->type;
+		od_frontend_status_t st =
+			copy_handle_msg(&stream, client, type);
+		if (st != OD_OK) {
+			return st;
+		}
+
+		rc = od_io_write(&server->io, additional, timeout_ms);
+		if (rc != 0) {
+			return OD_ESERVER_WRITE;
+		}
+	}
 
 	int server_event = 0;
 
@@ -890,6 +908,7 @@ stream_copy_from_client(char *ctx, od_client_t *client, uint32_t timeout_ms)
 
 od_frontend_status_t od_stream_copy_to_server(char *ctx, od_client_t *client,
 					      od_server_t *server,
+					      machine_msg_t *additional,
 					      uint32_t timeout_ms)
 {
 	/*
@@ -898,22 +917,15 @@ od_frontend_status_t od_stream_copy_to_server(char *ctx, od_client_t *client,
 	 */
 
 	od_frontend_status_t status =
-		stream_copy_from_client(ctx, client, timeout_ms);
+		stream_copy_from_client(ctx, client, additional, timeout_ms);
+
 	if (status != OD_OK) {
 		return status;
 	}
 
 	if (server->xproto_mode) {
-		static uint8_t bytes[] = { KIWI_FE_SYNC, 0, 0, 0,
-					   sizeof(uint32_t) };
-		assert(sizeof(bytes) == 5);
-
-		size_t unused;
-		int rc = od_io_write_raw(&server->io, bytes, sizeof(bytes),
-					 &unused, timeout_ms);
-		if (rc != 0) {
-			return OD_ESERVER_WRITE;
-		}
+		server->copy_mode = 0;
+		return OD_OK;
 	}
 
 	/* server->copy_mode=0 will be set on RFQ */

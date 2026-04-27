@@ -115,6 +115,24 @@ kiwi_fe_write_terminate(machine_msg_t *msg)
 	return msg;
 }
 
+KIWI_API static inline machine_msg_t *kiwi_fe_write_flush(machine_msg_t *msg)
+{
+	int size = sizeof(kiwi_header_t);
+	int offset = 0;
+	if (msg) {
+		offset = machine_msg_size(msg);
+	}
+	msg = machine_msg_create_or_advance(msg, size);
+	if (kiwi_unlikely(msg == NULL)) {
+		return NULL;
+	}
+	char *pos;
+	pos = (char *)machine_msg_data(msg) + offset;
+	kiwi_write8(&pos, KIWI_FE_FLUSH);
+	kiwi_write32(&pos, sizeof(uint32_t));
+	return msg;
+}
+
 KIWI_API static inline machine_msg_t *
 kiwi_fe_write_password(machine_msg_t *msg, char *password, int len)
 {

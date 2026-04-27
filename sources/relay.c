@@ -538,7 +538,8 @@ process_query_impl(od_relay_t *relay, machine_msg_t *msg, uint32_t timeout_ms)
 		/*
 		 * server is awaiting CopyData from client - stream it
 		 */
-		status = od_stream_copy_to_server("main", client, server,
+		machine_msg_t *add = od_relay_get_copy_additional(relay);
+		status = od_stream_copy_to_server("main", client, server, add,
 						  timeout_ms);
 	}
 

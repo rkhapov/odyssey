@@ -17,6 +17,7 @@ od_frontend_status_t od_stream_server_until_rfq(char *ctx, od_server_t *server,
 
 od_frontend_status_t od_stream_copy_to_server(char *ctx, od_client_t *client,
 					      od_server_t *server,
+					      machine_msg_t *additional,
 					      uint32_t timeout_ms);
 
 od_frontend_status_t od_service_stream_server_until_rfq(char *ctx,
