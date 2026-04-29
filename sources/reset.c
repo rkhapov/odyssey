@@ -188,6 +188,13 @@ int od_reset(od_server_t *server)
 		}
 	}
 
+	if (od_readahead_unread(&server->io.readahead) > 0) {
+		od_error(
+			&instance->logger, "reset", server->client, server,
+			"server left with some bytes in readahead after reset, closing and drop connection");
+		goto error;
+	}
+
 	/* ready */
 	return 1;
 drop:
