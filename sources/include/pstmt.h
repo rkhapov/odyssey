@@ -33,8 +33,9 @@
 #include <types.h>
 
 #define OD_PSTMT_NAME_PREFIX "odyssey_pstmt_"
+#define OD_MAX_PSTMT_NUM (99999999999999999UL)
 #define OD_PSTMT_NAME_MAX \
-	(sizeof(OD_PSTMT_NAME_PREFIX) + sizeof("18446744073709551615") + 1)
+	(sizeof(OD_PSTMT_NAME_PREFIX) + OD_MAX_PSTMT_NUM /* +17, to be 32 */)
 
 typedef char od_pstmt_name_t[OD_PSTMT_NAME_MAX];
 
@@ -47,6 +48,15 @@ typedef struct {
 struct od_pstmt {
 	od_pstmt_desc_t desc;
 	od_pstmt_name_t name;
+
+	/*
+	 * holded by:
+	 * - client pstmts, portals
+	 * - server pstmts
+	 *
+	 * after reach 0, the stmt must be deleted from global map
+	 */
+	atomic_uint_fast64_t refs;
 };
 
 /* "P_0" -> *od_pstmt_t */
@@ -87,6 +97,8 @@ void od_pstmt_next_name(od_pstmt_t *out);
 
 od_pstmt_t *od_pstmt_create_or_get(mm_hashmap_t *gm, od_pstmt_desc_t desc);
 
+void od_global_pstmt_remove(mm_hashmap_t *gm, od_pstmt_t *pstmt);
+
 /* helpers */
 char *od_pstmt_name_from_parse(machine_msg_t *msg);
 od_pstmt_desc_t od_pstmt_desc_from_parse(machine_msg_t *msg);
@@ -94,3 +106,20 @@ od_pstmt_desc_t od_pstmt_desc_copy(const od_pstmt_desc_t desc);
 
 machine_msg_t *od_pstmt_parse_of(const od_pstmt_t *pstmt);
 machine_msg_t *od_pstmt_describe_of(const od_pstmt_t *pstmt);
+
+static inline void od_pstmt_ref(od_pstmt_t *pstmt)
+{
+	atomic_fetch_add_explicit(&pstmt->refs, 1, memory_order_relaxed);
+}
+
+static inline int od_pstmt_unref(od_pstmt_t *pstmt, mm_hashmap_t *gm)
+{
+	uint64_t v = atomic_fetch_sub_explicit(&pstmt->refs, 1, memory_order_acq_rel);
+	if (v == 1) {
+		/*
+		 * some other thread can ref this pstmt in other place
+		 * this fact will be rechecked in remove fn
+		 */
+		od_global_pstmt_remove(gm, pstmt);
+	}
+}

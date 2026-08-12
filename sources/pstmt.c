@@ -432,6 +432,15 @@ od_pstmt_t *od_pstmt_create_or_get(mm_hashmap_t *pstmts,
 	return value;
 }
 
+void od_global_pstmt_remove(mm_hashmap_t *gm, od_pstmt_t *pstmt)
+{
+	mm_hashmap_keylock_t klock;
+	int rc = mm_hashmap_lock_key(pstmts, &klock, &desc, 0 /* no create */);
+	if (rc == -1) {
+		return NULL;
+	}
+}
+
 /* helpers */
 
 char *od_pstmt_name_from_parse(machine_msg_t *msg)
@@ -508,6 +517,7 @@ void od_pstmt_next_name(od_pstmt_t *out)
 	static atomic_uint_fast64_t cnt = 0;
 
 	uint64_t num = atomic_fetch_add(&cnt, 1);
+	od_release_assert(num <= OD_MAX_PSTMT_NUM);
 
 	od_snprintf(out->name, sizeof(od_pstmt_name_t), "%s%" PRIu64,
 		    OD_PSTMT_NAME_PREFIX, num);
