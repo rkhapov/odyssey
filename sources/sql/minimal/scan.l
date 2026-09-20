@@ -37,8 +37,8 @@
 		} \
 		longjmp(_ctx->fatal_jmp, 1); \
 	} \
-	fprintf(stderr, "%s\n", msg); \
 	od_assert(0); \
+	abort(); \
 } while (0)
 }
 
