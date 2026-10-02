@@ -95,6 +95,16 @@ typedef struct {
 #define od_query_ctx_set(ctx, flag) ((ctx)->flags |= (flag))
 #define od_query_ctx_clear(ctx, flag) ((ctx)->flags &= ~(uint64_t)(flag))
 
+/*
+ * the statement can not be safely executed on a standby:
+ * it was not recognized as read-only or failed to parse
+ */
+static inline int od_query_ctx_requires_master(const od_query_ctx_t *ctx)
+{
+	return !od_query_ctx_has(ctx, OD_QUERY_CTX_IS_SELECT) ||
+	       od_query_ctx_has(ctx, OD_QUERY_CTX_PARSE_ERROR);
+}
+
 od_sql_minimal_node_t *od_sql_minimal_node_alloc(od_linear_alloc_t *al,
 						 od_sql_minimal_node_tag_t type,
 						 size_t size);

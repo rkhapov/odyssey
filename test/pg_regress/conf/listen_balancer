@@ -68,6 +68,27 @@ listen {
 	auto_route_ro_on_standby yes
 }
 
+#storage "rr-hosts-quiet" {
+#	type "remote"
+#	host "localhost:5432,localhost:5433,localhost:5434"
+#	endpoints_status_poll_interval 5000
+#	balancing {
+#		method "roundrobin" {}
+#	}
+#}
+
+listen {
+	host "*"
+	port 8433
+	backlog 128
+	tls "disable"
+	balancing {
+		method "roundrobin" {}
+	}
+	#storage "rr-hosts-quiet"
+	auto_route_ro_on_standby yes
+}
+
 storage "rr-hosts" {
 	type "remote"
 	host "localhost:5432,localhost:5433,localhost:5434"

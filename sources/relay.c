@@ -966,6 +966,240 @@ static int relay_append(od_relay_t *relay, machine_msg_t *msg)
 	return 0;
 }
 
+static inline kiwi_fe_type_t xbuf_msg_fe_type(machine_msg_t *msg)
+{
+	return *(uint8_t *)machine_msg_data(msg);
+}
+
+typedef struct {
+	/*
+	 * client pstmt name (from Parse)
+	 * or portal name (from Bind)
+	 *
+	 * points into the xbuf msg data
+	 */
+	const char *name;
+	int requires_master;
+} od_xbuf_verdict_t;
+
+/*
+ * find the latest verdict for the name, tail-to-head,
+ * so the newest definition wins (ex. unnamed pstmt is
+ * redefined by the next Parse in the same batch)
+ *
+ * returns -1 if not found
+ */
+static int xbuf_verdicts_find(mm_vector_t *verdicts, const char *name)
+{
+	for (size_t i = mm_vector_size(verdicts); i > 0; --i) {
+		od_xbuf_verdict_t *v = mm_vector_get(verdicts, i - 1);
+		if (strcmp(v->name, name) == 0) {
+			return v->requires_master;
+		}
+	}
+
+	return -1;
+}
+
+static int xbuf_verdicts_append(mm_vector_t *verdicts, const char *name,
+				int requires_master)
+{
+	od_xbuf_verdict_t v;
+	v.name = name;
+	v.requires_master = requires_master;
+
+	return mm_vector_append(verdicts, &v);
+}
+
+/*
+ * check whether the accumulated extended-protocol batch
+ * contains a statement which can not be safely executed
+ * on a standby
+ *
+ * statements are resolved the same way the plan does:
+ * - Parse introduces a pstmt with its own query context,
+ *   parsed in place
+ * - Bind links a portal to a pstmt: the source pstmt is
+ *   either introduced by this batch or already known
+ *   to the client (pstmt->query_ctx)
+ * - Execute runs a portal: resolved the same way
+ *
+ * unresolvable statements require a master - it is
+ * a safe default (ex. with reserve_prepared_statement
+ * disabled a named pstmt from an earlier batch can not
+ * be recognized, so it must not be routed to a standby)
+ */
+static int xproto_batch_requires_master(od_relay_t *relay)
+{
+	od_client_t *client = relay->client;
+	od_instance_t *instance = client->global->instance;
+	od_route_t *route = client->route;
+	od_relay_xbuf_t *xbuf = &relay->xbuf;
+
+	int reserve_prepared = route->rule->pool->reserve_prepared_statement;
+
+	od_linear_alloc_t *arena = od_worker_get_local_linear_alloc();
+
+	mm_vector_t stmts;
+	mm_vector_init(&stmts, sizeof(od_xbuf_verdict_t), NULL);
+
+	mm_vector_t portals;
+	mm_vector_init(&portals, sizeof(od_xbuf_verdict_t), NULL);
+
+	int requires_master = 0;
+
+	od_query_ctx_t qctx;
+	memset(&qctx, 0, sizeof(qctx));
+
+	size_t count = mm_vector_size(&xbuf->msgs);
+	for (size_t i = 0; i < count; ++i) {
+		od_xbuf_msg_t *m = mm_vector_get(&xbuf->msgs, i);
+
+		machine_msg_t *msg = m->msg;
+		char *data = machine_msg_data(msg);
+		int size = machine_msg_size(msg);
+
+		switch (xbuf_msg_fe_type(msg)) {
+		case KIWI_FE_PARSE: {
+			char *pstmt_name;
+			uint32_t pstmt_name_len;
+			char *query;
+			uint32_t query_len;
+			int rc = kiwi_be_read_parse(data, size, &pstmt_name,
+						    &pstmt_name_len, &query,
+						    &query_len);
+			if (rc != 0) {
+				requires_master = 1;
+				continue;
+			}
+
+			od_query_parse_fill_ctx(
+				query, query_len - 1 /* zero included */, arena,
+				&qctx, &instance->config.query_parsing);
+
+			int rm = od_query_ctx_requires_master(&qctx);
+
+			if (xbuf_verdicts_append(&stmts, pstmt_name, rm) != 0) {
+				requires_master = 1;
+				goto out;
+			}
+
+			if (rm) {
+				requires_master = 1;
+			}
+			break;
+		}
+		case KIWI_FE_BIND: {
+			char *portal_name;
+			uint32_t portal_name_len;
+			char *pstmt_name;
+			uint32_t pstmt_name_len;
+			int rc = kiwi_be_read_bind_names(
+				data, size, &portal_name, &portal_name_len,
+				&pstmt_name, &pstmt_name_len);
+			if (rc != 0) {
+				requires_master = 1;
+				continue;
+			}
+
+			int rm = xbuf_verdicts_find(&stmts, pstmt_name);
+			if (rm < 0) {
+				od_pstmt_t *pstmt = NULL;
+				if (reserve_prepared) {
+					pstmt = od_client_get_pstmt(client,
+								    pstmt_name);
+				}
+
+				rm = pstmt != NULL ?
+					     od_query_ctx_requires_master(
+						     &pstmt->query_ctx) :
+					     1 /* unknown - use master */;
+			}
+
+			if (xbuf_verdicts_append(&portals, portal_name, rm) !=
+			    0) {
+				requires_master = 1;
+				goto out;
+			}
+
+			if (rm) {
+				requires_master = 1;
+			}
+			break;
+		}
+		case KIWI_FE_EXECUTE: {
+			char *portal_name;
+			uint32_t portal_name_len;
+			int rc = kiwi_be_read_execute(data, size, &portal_name,
+						      &portal_name_len);
+			if (rc != 0) {
+				requires_master = 1;
+				continue;
+			}
+
+			int rm = xbuf_verdicts_find(&portals, portal_name);
+			if (rm < 0) {
+				od_pstmt_t *pstmt = NULL;
+				if (reserve_prepared) {
+					pstmt = od_client_get_portal(
+						client, portal_name);
+				}
+
+				rm = pstmt != NULL ?
+					     od_query_ctx_requires_master(
+						     &pstmt->query_ctx) :
+					     1 /* unknown - use master */;
+			}
+
+			if (rm) {
+				requires_master = 1;
+			}
+			break;
+		}
+		default:
+			/*
+			 * Query (deferred begin), Describe, Close -
+			 * nothing is executed, no routing impact
+			 */
+			break;
+		}
+	}
+
+out:
+	od_query_ctx_reset(&qctx);
+	mm_vector_destroy(&stmts);
+	mm_vector_destroy(&portals);
+	od_linear_alloc_reset(arena, 0);
+
+	return requires_master;
+}
+
+/*
+ * a batch of extended-protocol messages is about to be executed
+ * on a newly attached server: fill the client query context with
+ * the verdict for the whole batch, so attach_effective_tsa can
+ * route the batch to a standby
+ *
+ * the context is the same one used by the simple protocol:
+ * - all batch statements are read-only - set OD_QUERY_CTX_IS_SELECT
+ * - otherwise leave the context empty, which is interpreted
+ *   as read-write
+ */
+static void xproto_seed_query_ctx(od_relay_t *relay)
+{
+	od_client_t *client = relay->client;
+
+	od_query_ctx_reset(&client->query_ctx);
+
+	if (!od_tsa_auto_route_ro_enabled(client)) {
+		return;
+	}
+
+	if (!xproto_batch_requires_master(relay)) {
+		od_query_ctx_set(&client->query_ctx, OD_QUERY_CTX_IS_SELECT);
+	}
+}
+
 /* note: does not free the buffers */
 static od_frontend_status_t execute_xbuf(od_relay_t *relay, machine_msg_t *msg,
 					 uint32_t timeout_ms)
@@ -976,6 +1210,7 @@ static od_frontend_status_t execute_xbuf(od_relay_t *relay, machine_msg_t *msg,
 
 	if (server == NULL) {
 		/* we will write/read to/from server - attach if needed */
+		xproto_seed_query_ctx(relay);
 		return OD_ATTACH;
 	}
 
@@ -1057,6 +1292,8 @@ od_frontend_status_t od_relay_process_xflush(od_relay_t *relay,
 	od_frontend_status_t status =
 		process_possible_attach(execute_xbuf, relay, msg, timeout_ms);
 
+	od_query_ctx_reset(&relay->client->query_ctx);
+
 	/* never reuse this ones */
 	xbuf_clear(&relay->xbuf);
 	od_xplan_clear(&relay->xplan);
@@ -1070,6 +1307,8 @@ od_frontend_status_t od_relay_process_xsync(od_relay_t *relay,
 {
 	od_frontend_status_t status =
 		process_possible_attach(execute_xbuf, relay, msg, timeout_ms);
+
+	od_query_ctx_reset(&relay->client->query_ctx);
 
 	/* never reuse this ones */
 	xbuf_clear(&relay->xbuf);
